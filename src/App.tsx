@@ -450,20 +450,22 @@ function Rail({ post }: { post: MemePost }) {
 interface SlideProps {
   post: MemePost;
   active: boolean;
-  muted: boolean;
-  setMuted: (v: boolean) => void;
+  volume: number;
+  setVolume: (v: number) => void;
   headersJson: string;
 }
 
-function Slide({ post, active, muted, setMuted, headersJson }: SlideProps) {
+function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
   const isVideo = post.type === "video";
   // When there is no separate audioUrl the video element IS the audio source
   // (HLS stream with audio track). When audioUrl is set the video is muted and
   // a separate <audio> element carries the sound.
   const videoHasAudio = isVideo && !post.audioUrl;
+  const muted = volume === 0;
   const [paused, setPaused] = useState(false);
   const [prog, setProg] = useState(0);
   const [hasAudio, setHasAudio] = useState(!!post.audioUrl);
+  const [showVol, setShowVol] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const userPausedRef = useRef(false);
@@ -472,19 +474,29 @@ function Slide({ post, active, muted, setMuted, headersJson }: SlideProps) {
   // Tracks the audioUrl that was already fetched so we don't re-fetch on
   // every activation after the first.
   const fetchedForRef = useRef<string | null>(null);
+  // Last non-zero volume, used to restore when the mute icon is clicked.
+  const prevVolRef = useRef(volume > 0 ? volume : 1);
+  useEffect(() => {
+    if (volume > 0) prevVolRef.current = volume;
+  }, [volume]);
+  // Close the volume panel when this slide scrolls out of view.
+  useEffect(() => {
+    if (!active) setShowVol(false);
+  }, [active]);
 
   // Play audio imperatively — avoids the React state→render→effect timing race.
   const playAudio = useCallback(
     (audio: HTMLAudioElement) => {
       audio.muted = true; // satisfy autoplay policy, then restore
+      audio.volume = volume > 0 ? volume : 1;
       audio
         .play()
         .then(() => {
-          audio.muted = muted;
+          audio.muted = volume === 0;
         })
         .catch((e) => console.error("[audio play]", e));
     },
-    [muted],
+    [volume],
   );
 
   // Fetch the audio track through the Tauri backend (with user's auth headers).
@@ -560,11 +572,18 @@ function Slide({ post, active, muted, setMuted, headersJson }: SlideProps) {
     }
   }, [active, isVideo, videoHasAudio, muted]);
 
-  // Sync muted state to both video (HLS) and audio (fallback) elements.
+  // Sync volume/muted to both video (HLS) and audio (fallback) elements.
   useEffect(() => {
-    if (videoHasAudio && videoRef.current) videoRef.current.muted = muted;
-    if (audioRef.current) audioRef.current.muted = muted;
-  }, [muted, videoHasAudio]);
+    const isMuted = volume === 0;
+    if (videoHasAudio && videoRef.current) {
+      videoRef.current.muted = isMuted;
+      if (!isMuted) videoRef.current.volume = volume;
+    }
+    if (audioRef.current) {
+      audioRef.current.muted = isMuted;
+      if (!isMuted) audioRef.current.volume = volume;
+    }
+  }, [volume, videoHasAudio]);
 
   const handleClick = () => {
     if (!isVideo) return;
@@ -678,33 +697,59 @@ function Slide({ post, active, muted, setMuted, headersJson }: SlideProps) {
       <Rail post={post} />
 
       {isVideo && (
-        <button
-          className="soundBtn ico"
-          onClick={() => setMuted(!muted)}
-          aria-label="sound"
-        >
-          {muted ? (
-            <Ico.mute
-              width="22"
-              height="22"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          ) : (
-            <Ico.sound
-              width="22"
-              height="22"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+        <div className="soundControl">
+          {showVol && (
+            <div className="volumePanel">
+              <input
+                type="range"
+                className="volumeSlider"
+                min={0}
+                max={1}
+                step={0.05}
+                value={volume}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (v > 0) prevVolRef.current = v;
+                  setVolume(v);
+                }}
+                aria-label="volume"
+              />
+            </div>
           )}
-        </button>
+          <button
+            className="soundBtn ico"
+            onClick={() => {
+              if (volume === 0) {
+                setVolume(prevVolRef.current);
+              } else {
+                setShowVol((v) => !v);
+              }
+            }}
+            aria-label="sound"
+          >
+            {volume === 0 ? (
+              <Ico.mute
+                width="22"
+                height="22"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            ) : (
+              <Ico.sound
+                width="22"
+                height="22"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
+          </button>
+        </div>
       )}
 
       {isVideo && (
@@ -752,7 +797,14 @@ export default function App() {
     return isNaN(s) ? 0 : s;
   });
   const [hideUI, setHideUI] = useState(false);
-  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(() => {
+    const saved = parseFloat(localStorage.getItem("memestok_vol") ?? "1");
+    return isNaN(saved) ? 1 : Math.max(0, Math.min(1, saved));
+  });
+  const prevVolumeRef = useRef(1);
+  useEffect(() => {
+    localStorage.setItem("memestok_vol", String(volume));
+  }, [volume]);
 
   const loadPosts = useCallback((activeHeadersJson: string) => {
     startTransition(() => {
@@ -857,7 +909,14 @@ export default function App() {
         e.preventDefault();
         go(-1);
       } else if (e.key === "h" || e.key === "H") setHideUI((v) => !v);
-      else if (e.key === "m" || e.key === "M") setMuted((v) => !v);
+      else if (e.key === "m" || e.key === "M")
+        setVolume((v) => {
+          if (v > 0) {
+            prevVolumeRef.current = v;
+            return 0;
+          }
+          return prevVolumeRef.current;
+        });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1021,8 +1080,8 @@ export default function App() {
               key={p.id}
               post={p}
               active={i === idx}
-              muted={muted}
-              setMuted={setMuted}
+              volume={volume}
+              setVolume={setVolume}
               headersJson={headersJson ?? ""}
             />
           ))}
