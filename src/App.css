@@ -411,6 +411,44 @@ body {
   filter: drop-shadow(0 2px 18px rgba(0, 0, 0, .6));
 }
 
+/* media spinner */
+.mediaSpinner {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(255, 255, 255, .18);
+  border-top-color: rgba(255, 255, 255, .85);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* infinite scroll loader */
+.moreLoader {
+  position: absolute;
+  bottom: 56px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  z-index: 10;
+  pointer-events: none;
+}
+
 /* loading */
 .loadScreen {
   height: 100dvh;

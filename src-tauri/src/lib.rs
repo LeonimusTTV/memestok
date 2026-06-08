@@ -36,11 +36,14 @@ process.stdout.write(Buffer.from(buf).toString('base64'));
 }
 
 #[tauri::command]
-async fn fetch_reddit(subreddit: String, headers_json: String) -> Result<String, String> {
-    let url = format!(
+async fn fetch_reddit(subreddit: String, headers_json: String, after: String) -> Result<String, String> {
+    let mut url = format!(
         "https://www.reddit.com/r/{}.json?limit=25&raw_json=1",
         subreddit
     );
+    if !after.is_empty() {
+        url.push_str(&format!("&after={}", after));
+    }
 
     // The script receives the full headers object from the env so it uses the
     // user's exact browser fingerprint — no hardcoded headers needed.

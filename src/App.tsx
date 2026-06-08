@@ -127,20 +127,27 @@ function parsePost(raw: RedditPost): MemePost | null {
 async function fetchSubreddit(
   sub: string,
   headersJson: string,
-): Promise<MemePost[]> {
+  after = "",
+): Promise<{ posts: MemePost[]; after: string | null }> {
   const text = await invoke<string>("fetch_reddit", {
     subreddit: sub,
     headersJson,
+    after,
   });
-  let json: { data: { children: Array<{ data: RedditPost }> } };
+  let json: {
+    data: { children: Array<{ data: RedditPost }>; after: string | null };
+  };
   try {
     json = JSON.parse(text);
   } catch {
     throw new Error(`${sub}: Reddit returned non-JSON`);
   }
-  return json.data.children
-    .map((c) => parsePost(c.data))
-    .filter((p): p is MemePost => p !== null);
+  return {
+    posts: json.data.children
+      .map((c) => parsePost(c.data))
+      .filter((p): p is MemePost => p !== null),
+    after: json.data.after ?? null,
+  };
 }
 
 function interleave(arrays: MemePost[][]): MemePost[] {
@@ -152,6 +159,15 @@ function interleave(arrays: MemePost[][]): MemePost[] {
     }
   }
   return out;
+}
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 /* ─── Icons ──────────────────────────────────────────────────── */
@@ -463,6 +479,8 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
   const videoHasAudio = isVideo && !post.audioUrl;
   const muted = volume === 0;
   const [paused, setPaused] = useState(false);
+  const [buffering, setBuffering] = useState(false);
+  const [imgLoaded, setImgLoaded] = useState(false);
   const [prog, setProg] = useState(0);
   const [hasAudio, setHasAudio] = useState(!!post.audioUrl);
   const [showVol, setShowVol] = useState(false);
@@ -551,6 +569,7 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
     const audio = audioRef.current;
     if (active) {
       userPausedRef.current = false;
+      setBuffering(true);
       if (videoHasAudio) {
         // HLS: audio is in the video stream — use the same muted-autoplay trick.
         video!.muted = true;
@@ -565,6 +584,7 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
       }
       // Fallback audio started imperatively by the fetch effect once blob ready.
     } else {
+      setBuffering(false);
       video?.pause();
       if (video) video.currentTime = 0;
       audio?.pause();
@@ -650,6 +670,9 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
           onPause={handlePause}
           onTimeUpdate={handleTimeUpdate}
           onEnded={handleEnded}
+          onCanPlay={() => setBuffering(false)}
+          onPlaying={() => setBuffering(false)}
+          onWaiting={() => setBuffering(true)}
           onClick={handleClick}
         />
       ) : (
@@ -658,7 +681,19 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
           src={post.media}
           alt=""
           draggable={false}
+          onLoad={() => setImgLoaded(true)}
         />
+      )}
+
+      {isVideo && active && buffering && !paused && (
+        <div className="mediaSpinner">
+          <div className="spinner" />
+        </div>
+      )}
+      {!isVideo && !imgLoaded && (
+        <div className="mediaSpinner">
+          <div className="spinner" />
+        </div>
       )}
 
       {post.audioUrl && hasAudio && (
@@ -790,7 +825,10 @@ export default function App() {
 
   const [allPosts, setAllPosts] = useState<MemePost[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const afterMapRef = useRef<Record<string, string | null>>({});
   const [filter, setFilter] = useState<Filter>("all");
   const [idx, setIdx] = useState(() => {
     const s = parseInt(localStorage.getItem("memestok_idx") ?? "0", 10);
@@ -807,23 +845,29 @@ export default function App() {
   }, [volume]);
 
   const loadPosts = useCallback((activeHeadersJson: string) => {
+    afterMapRef.current = {};
     startTransition(() => {
       setLoading(true);
       setError(null);
       setAllPosts([]);
+      setHasMore(true);
     });
     Promise.allSettled(
       SUBREDDITS.map((sub) => fetchSubreddit(sub, activeHeadersJson)),
     ).then((results) => {
-      const fulfilled = results
-        .filter(
-          (r): r is PromiseFulfilledResult<MemePost[]> =>
-            r.status === "fulfilled",
-        )
-        .map((r) => r.value);
-      const rejected = results.filter(
-        (r): r is PromiseRejectedResult => r.status === "rejected",
-      );
+      const newAfterMap: Record<string, string | null> = {};
+      const fulfilled: MemePost[][] = [];
+      const rejected: PromiseRejectedResult[] = [];
+      results.forEach((r, i) => {
+        const sub = SUBREDDITS[i];
+        if (r.status === "fulfilled") {
+          newAfterMap[sub] = r.value.after;
+          fulfilled.push(r.value.posts);
+        } else {
+          rejected.push(r as PromiseRejectedResult);
+        }
+      });
+      afterMapRef.current = newAfterMap;
       if (fulfilled.length === 0) {
         const reason = String(rejected[0]?.reason ?? "Unknown error");
         if (
@@ -840,9 +884,42 @@ export default function App() {
         }
       } else {
         setCookieExpired(false);
-        setAllPosts(interleave(fulfilled));
+        setAllPosts(shuffle(interleave(fulfilled)));
+        setHasMore(SUBREDDITS.some((sub) => !!afterMapRef.current[sub]));
         setLoading(false);
       }
+    });
+  }, []);
+
+  const loadMore = useCallback((activeHeadersJson: string) => {
+    setLoadingMore(true);
+    Promise.allSettled(
+      SUBREDDITS.map((sub) => {
+        const after = afterMapRef.current[sub];
+        if (!after)
+          return Promise.resolve({ posts: [] as MemePost[], after: null });
+        return fetchSubreddit(sub, activeHeadersJson, after);
+      }),
+    ).then((results) => {
+      const newAfterMap = { ...afterMapRef.current };
+      const arrays: MemePost[][] = [];
+      results.forEach((r, i) => {
+        const sub = SUBREDDITS[i];
+        if (r.status === "fulfilled" && r.value.posts.length > 0) {
+          newAfterMap[sub] = r.value.after;
+          arrays.push(r.value.posts);
+        }
+      });
+      afterMapRef.current = newAfterMap;
+      const newPosts = shuffle(interleave(arrays));
+      if (newPosts.length > 0) {
+        setAllPosts((prev) => {
+          const seen = new Set(prev.map((p) => p.id));
+          return [...prev, ...newPosts.filter((p) => !seen.has(p.id))];
+        });
+      }
+      setHasMore(SUBREDDITS.some((sub) => !!afterMapRef.current[sub]));
+      setLoadingMore(false);
     });
   }, []);
 
@@ -869,6 +946,15 @@ export default function App() {
     if (!el) return;
     el.scrollTop = Math.min(idx, posts.length - 1) * el.clientHeight;
   }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Infinite scroll: load more posts when approaching the end of the feed.
+  useEffect(() => {
+    if (!headersJson || loading || loadingMore || !hasMore) return;
+    if (posts.length === 0) return;
+    if (posts.length < 8 || idx >= posts.length - 8) {
+      loadMore(headersJson);
+    }
+  }, [idx, posts.length, headersJson, loading, loadingMore, hasMore, loadMore]);
 
   const onScroll = useCallback(() => {
     const el = scroller.current;
@@ -1086,6 +1172,14 @@ export default function App() {
             />
           ))}
         </div>
+
+        {loadingMore && (
+          <div className="moreLoader">
+            <span className="loadDot" />
+            <span className="loadDot" />
+            <span className="loadDot" />
+          </div>
+        )}
 
         {!hideUI && (
           <div className="khint">arrow keys navigate · H hide · M mute</div>
