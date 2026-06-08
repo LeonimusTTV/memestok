@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "memestok-tauri",
+  "productName": "MemesTok",
   "version": "0.1.0",
-  "identifier": "com.leonimust.memestok-tauri",
+  "identifier": "com.leonimust.memestok",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -12,9 +12,10 @@
   "app": {
     "windows": [
       {
-        "title": "memestok-tauri",
+        "title": "MemesTok",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "fullscreen": true
       }
     ],
     "security": {
