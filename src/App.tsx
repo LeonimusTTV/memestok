@@ -12,6 +12,7 @@ import "./App.css";
 
 interface RedditVideo {
   fallback_url: string;
+  hls_url?: string;
   is_gif: boolean;
   has_audio?: boolean;
 }
@@ -81,6 +82,10 @@ function parsePost(raw: RedditPost): MemePost | null {
     const match = rv.fallback_url.match(/v\.redd\.it\/([^/?]+)/);
     const videoId = match?.[1];
     const bg = raw.preview?.images?.[0]?.source?.url ?? "";
+    // Prefer the HLS URL: it is a signed stream that includes the audio track
+    // and loads natively in WKWebView (AVFoundation) without any proxy.
+    // Fall back to fallback_url + separate audio only when hls_url is absent.
+    const useHls = !!rv.hls_url && !rv.is_gif;
     return {
       id: raw.id,
       sub: raw.subreddit,
@@ -88,10 +93,10 @@ function parsePost(raw: RedditPost): MemePost | null {
       author: `u/${raw.author}`,
       up: raw.ups,
       type: "video",
-      media: rv.fallback_url,
+      media: useHls ? rv.hls_url! : rv.fallback_url,
       bg,
       audioUrl:
-        !rv.is_gif && videoId
+        !useHls && !rv.is_gif && rv.has_audio !== false && videoId
           ? `https://v.redd.it/${videoId}/DASH_audio.mp4`
           : undefined,
       t: relTime(raw.created_utc),
@@ -447,16 +452,86 @@ interface SlideProps {
   active: boolean;
   muted: boolean;
   setMuted: (v: boolean) => void;
+  headersJson: string;
 }
 
-function Slide({ post, active, muted, setMuted }: SlideProps) {
+function Slide({ post, active, muted, setMuted, headersJson }: SlideProps) {
   const isVideo = post.type === "video";
+  // When there is no separate audioUrl the video element IS the audio source
+  // (HLS stream with audio track). When audioUrl is set the video is muted and
+  // a separate <audio> element carries the sound.
+  const videoHasAudio = isVideo && !post.audioUrl;
   const [paused, setPaused] = useState(false);
   const [prog, setProg] = useState(0);
   const [hasAudio, setHasAudio] = useState(!!post.audioUrl);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const userPausedRef = useRef(false);
+  // Holds the revocable blob URL for the audio so we can clean it up.
+  const audioBlobUrlRef = useRef<string | null>(null);
+  // Tracks the audioUrl that was already fetched so we don't re-fetch on
+  // every activation after the first.
+  const fetchedForRef = useRef<string | null>(null);
+
+  // Play audio imperatively — avoids the React state→render→effect timing race.
+  const playAudio = useCallback(
+    (audio: HTMLAudioElement) => {
+      audio.muted = true; // satisfy autoplay policy, then restore
+      audio
+        .play()
+        .then(() => {
+          audio.muted = muted;
+        })
+        .catch((e) => console.error("[audio play]", e));
+    },
+    [muted],
+  );
+
+  // Fetch the audio track through the Tauri backend (with user's auth headers).
+  // We set audio.src and call play() imperatively so there is no race between
+  // React state updates and the effect that calls play().
+  useEffect(() => {
+    if (!active || !post.audioUrl || !hasAudio || !headersJson) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    // Already fetched for this post — just play from the cached blob URL.
+    if (fetchedForRef.current === post.audioUrl && audioBlobUrlRef.current) {
+      playAudio(audio);
+      return;
+    }
+
+    let cancelled = false;
+    invoke<string>("fetch_media", { url: post.audioUrl, headersJson })
+      .then((b64) => {
+        if (cancelled) return;
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: "audio/mp4" });
+        const blobUrl = URL.createObjectURL(blob);
+        // Revoke previous blob URL for this post (if any).
+        if (audioBlobUrlRef.current)
+          URL.revokeObjectURL(audioBlobUrlRef.current);
+        audioBlobUrlRef.current = blobUrl;
+        fetchedForRef.current = post.audioUrl ?? null;
+        // Set src directly on the DOM element — no React state update needed.
+        audio.src = blobUrl;
+        playAudio(audio);
+      })
+      .catch((e) => {
+        console.error("[fetch_media] failed for", post.audioUrl, e);
+        if (!cancelled) setHasAudio(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, post.audioUrl, hasAudio, headersJson, playAudio]);
+
+  // Revoke blob URL when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (audioBlobUrlRef.current) URL.revokeObjectURL(audioBlobUrlRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isVideo) return;
@@ -464,19 +539,32 @@ function Slide({ post, active, muted, setMuted }: SlideProps) {
     const audio = audioRef.current;
     if (active) {
       userPausedRef.current = false;
-      video?.play().catch(() => {});
-      audio?.play().catch(() => {});
+      if (videoHasAudio) {
+        // HLS: audio is in the video stream — use the same muted-autoplay trick.
+        video!.muted = true;
+        video!
+          .play()
+          .then(() => {
+            video!.muted = muted;
+          })
+          .catch((e) => console.error("[video play]", e));
+      } else {
+        video?.play().catch(() => {});
+      }
+      // Fallback audio started imperatively by the fetch effect once blob ready.
     } else {
       video?.pause();
       if (video) video.currentTime = 0;
       audio?.pause();
       if (audio) audio.currentTime = 0;
     }
-  }, [active, isVideo]);
+  }, [active, isVideo, videoHasAudio, muted]);
 
+  // Sync muted state to both video (HLS) and audio (fallback) elements.
   useEffect(() => {
+    if (videoHasAudio && videoRef.current) videoRef.current.muted = muted;
     if (audioRef.current) audioRef.current.muted = muted;
-  }, [muted]);
+  }, [muted, videoHasAudio]);
 
   const handleClick = () => {
     if (!isVideo) return;
@@ -484,8 +572,8 @@ function Slide({ post, active, muted, setMuted }: SlideProps) {
     const audio = audioRef.current;
     if (video?.paused) {
       userPausedRef.current = false;
-      video?.play().catch(() => {});
-      audio?.play().catch(() => {});
+      video.play().catch(() => {});
+      if (audio && audioBlobUrlRef.current) playAudio(audio);
     } else {
       userPausedRef.current = true;
       video?.pause();
@@ -505,9 +593,9 @@ function Slide({ post, active, muted, setMuted }: SlideProps) {
       video.currentTime = 0;
       video.play().catch(() => {});
     }
-    if (audio) {
+    if (audio && audioBlobUrlRef.current) {
       audio.currentTime = 0;
-      audio.play().catch(() => {});
+      playAudio(audio);
     }
   };
 
@@ -537,7 +625,7 @@ function Slide({ post, active, muted, setMuted }: SlideProps) {
           className="media contain"
           src={post.media}
           playsInline
-          muted
+          muted={!videoHasAudio}
           preload="none"
           onPlay={handlePlay}
           onPause={handlePause}
@@ -557,9 +645,8 @@ function Slide({ post, active, muted, setMuted }: SlideProps) {
       {post.audioUrl && hasAudio && (
         <audio
           ref={audioRef}
-          src={post.audioUrl}
           preload="none"
-          muted={muted}
+          muted
           onError={() => setHasAudio(false)}
         />
       )}
@@ -936,6 +1023,7 @@ export default function App() {
               active={i === idx}
               muted={muted}
               setMuted={setMuted}
+              headersJson={headersJson ?? ""}
             />
           ))}
         </div>
