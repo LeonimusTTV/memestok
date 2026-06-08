@@ -8,8 +8,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
-/* ─── Types ──────────────────────────────────────────────────── */
-
 interface RedditVideo {
   fallback_url: string;
   hls_url?: string;
@@ -44,8 +42,6 @@ interface MemePost {
   t: string;
 }
 
-/* ─── Constants ──────────────────────────────────────────────── */
-
 const DEFAULT_SUBREDDITS = [
   "dankmemes",
   "funny",
@@ -60,8 +56,6 @@ const DEFAULT_SUBREDDITS = [
 
 const HEADERS_KEY = "reddit_headers";
 const SUBS_KEY = "memestok_subs";
-
-/* ─── Helpers ────────────────────────────────────────────────── */
 
 const fmt = (n: number): string => {
   if (n >= 1_000_000)
@@ -80,13 +74,8 @@ function relTime(utc: number): string {
 function parsePost(raw: RedditPost): MemePost | null {
   if (raw.is_video && raw.media?.reddit_video?.fallback_url) {
     const rv = raw.media.reddit_video;
-    const match = rv.fallback_url.match(/v\.redd\.it\/([^/?]+)/);
-    const videoId = match?.[1];
     const bg = raw.preview?.images?.[0]?.source?.url ?? "";
-    // Prefer the HLS URL: it is a signed stream that includes the audio track
-    // and loads natively in WKWebView (AVFoundation) without any proxy.
-    // Fall back to fallback_url + separate audio only when hls_url is absent.
-    const useHls = !!rv.hls_url && !rv.is_gif;
+
     return {
       id: raw.id,
       sub: raw.subreddit,
@@ -94,11 +83,11 @@ function parsePost(raw: RedditPost): MemePost | null {
       author: `u/${raw.author}`,
       up: raw.ups,
       type: "video",
-      media: useHls ? rv.hls_url! : rv.fallback_url,
+      media: rv.fallback_url,
       bg,
       audioUrl:
-        !useHls && !rv.is_gif && rv.has_audio !== false && videoId
-          ? `https://v.redd.it/${videoId}/DASH_audio.mp4`
+        !rv.is_gif && rv.has_audio !== false && rv.hls_url
+          ? rv.hls_url
           : undefined,
       t: relTime(raw.created_utc),
     };
@@ -171,8 +160,6 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-/* ─── Icons ──────────────────────────────────────────────────── */
-
 type SvgProps = React.SVGProps<SVGSVGElement>;
 
 const Ico = {
@@ -241,8 +228,6 @@ const Ico = {
   ),
 };
 
-/* ─── Setup Screen ───────────────────────────────────────────── */
-
 interface SetupScreenProps {
   onSave: (headersJson: string) => void;
   isExpired?: boolean;
@@ -255,8 +240,6 @@ interface SetupScreenProps {
 function parseHeadersFromPaste(text: string): Record<string, string> | null {
   const t = text.trim();
 
-  // ── "Copy as fetch" (Chrome/Edge) ─────────────────────────────────────────
-  // Format: fetch("url", { "headers": { "key": "value", ... }, ... })
   const hi = t.indexOf('"headers"');
   if (hi !== -1) {
     const braceStart = t.indexOf("{", hi);
@@ -285,9 +268,6 @@ function parseHeadersFromPaste(text: string): Record<string, string> | null {
     }
   }
 
-  // ── "Copy as cURL (bash)" ─────────────────────────────────────────────────
-  // Format: -H 'key: value' or -H "key: value"
-  // macOS Chrome also emits -b 'cookie-string' instead of -H 'cookie: ...'
   const headers: Record<string, string> = {};
   const re = /-H\s+(?:'([^']+)'|"([^"]+)")/g;
   let m: RegExpExecArray | null;
@@ -443,8 +423,6 @@ function SetupScreen({ onSave, isExpired }: SetupScreenProps) {
   );
 }
 
-/* ─── Subreddit Manager ─────────────────────────────────────── */
-
 interface SubredditManagerProps {
   subreddits: string[];
   onSave: (newSubs: string[]) => void;
@@ -581,8 +559,6 @@ function SubredditManager({
   );
 }
 
-/* ─── Rail ───────────────────────────────────────────────────── */
-
 function Rail({ post }: { post: MemePost }) {
   const [voted, setVoted] = useState(0);
   const count = post.up + (voted === 1 ? 1 : voted === -1 ? -1 : 0);
@@ -615,21 +591,24 @@ function Rail({ post }: { post: MemePost }) {
   );
 }
 
-/* ─── Slide ──────────────────────────────────────────────────── */
-
 interface SlideProps {
   post: MemePost;
   active: boolean;
+  preload?: boolean;
   volume: number;
   setVolume: (v: number) => void;
   headersJson: string;
 }
 
-function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
+function Slide({
+  post,
+  active,
+  preload = false,
+  volume,
+  setVolume,
+}: SlideProps) {
   const isVideo = post.type === "video";
-  // When there is no separate audioUrl the video element IS the audio source
-  // (HLS stream with audio track). When audioUrl is set the video is muted and
-  // a separate <audio> element carries the sound.
+
   const videoHasAudio = isVideo && !post.audioUrl;
   const muted = volume === 0;
   const [paused, setPaused] = useState(false);
@@ -641,11 +620,6 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const userPausedRef = useRef(false);
-  // Holds the revocable blob URL for the audio so we can clean it up.
-  const audioBlobUrlRef = useRef<string | null>(null);
-  // Tracks the audioUrl that was already fetched so we don't re-fetch on
-  // every activation after the first.
-  const fetchedForRef = useRef<string | null>(null);
   // Last non-zero volume, used to restore when the mute icon is clicked.
   const prevVolRef = useRef(volume > 0 ? volume : 1);
   useEffect(() => {
@@ -671,51 +645,15 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
     [volume],
   );
 
-  // Fetch the audio track through the Tauri backend (with user's auth headers).
-  // We set audio.src and call play() imperatively so there is no race between
-  // React state updates and the effect that calls play().
   useEffect(() => {
-    if (!active || !post.audioUrl || !hasAudio || !headersJson) return;
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    // Already fetched for this post — just play from the cached blob URL.
-    if (fetchedForRef.current === post.audioUrl && audioBlobUrlRef.current) {
-      playAudio(audio);
-      return;
+    if (!isVideo || active) return;
+    const video = videoRef.current;
+    if (!video) return;
+    if (preload) {
+      video.load();
+      audioRef.current?.load();
     }
-
-    let cancelled = false;
-    invoke<string>("fetch_media", { url: post.audioUrl, headersJson })
-      .then((b64) => {
-        if (cancelled) return;
-        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-        const blob = new Blob([bytes], { type: "audio/mp4" });
-        const blobUrl = URL.createObjectURL(blob);
-        // Revoke previous blob URL for this post (if any).
-        if (audioBlobUrlRef.current)
-          URL.revokeObjectURL(audioBlobUrlRef.current);
-        audioBlobUrlRef.current = blobUrl;
-        fetchedForRef.current = post.audioUrl ?? null;
-        // Set src directly on the DOM element — no React state update needed.
-        audio.src = blobUrl;
-        playAudio(audio);
-      })
-      .catch((e) => {
-        console.error("[fetch_media] failed for", post.audioUrl, e);
-        if (!cancelled) setHasAudio(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [active, post.audioUrl, hasAudio, headersJson, playAudio]);
-
-  // Revoke blob URL when the component unmounts.
-  useEffect(() => {
-    return () => {
-      if (audioBlobUrlRef.current) URL.revokeObjectURL(audioBlobUrlRef.current);
-    };
-  }, []);
+  }, [preload, isVideo, active]);
 
   useEffect(() => {
     if (!isVideo) return;
@@ -735,8 +673,17 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
           .catch((e) => console.error("[video play]", e));
       } else {
         video?.play().catch(() => {});
+        // Audio src is set directly in JSX (hls_url) — play it here.
+        if (audio && hasAudio) {
+          audio.muted = true;
+          audio
+            .play()
+            .then(() => {
+              audio.muted = muted;
+            })
+            .catch(() => {});
+        }
       }
-      // Fallback audio started imperatively by the fetch effect once blob ready.
     } else {
       setBuffering(false);
       video?.pause();
@@ -744,7 +691,7 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
       audio?.pause();
       if (audio) audio.currentTime = 0;
     }
-  }, [active, isVideo, videoHasAudio, muted]);
+  }, [active, isVideo, videoHasAudio, muted, hasAudio]);
 
   // Sync volume/muted to both video (HLS) and audio (fallback) elements.
   useEffect(() => {
@@ -766,7 +713,7 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
     if (video?.paused) {
       userPausedRef.current = false;
       video.play().catch(() => {});
-      if (audio && audioBlobUrlRef.current) playAudio(audio);
+      if (audio && hasAudio) playAudio(audio);
     } else {
       userPausedRef.current = true;
       video?.pause();
@@ -786,7 +733,7 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
       video.currentTime = 0;
       video.play().catch(() => {});
     }
-    if (audio && audioBlobUrlRef.current) {
+    if (audio && hasAudio) {
       audio.currentTime = 0;
       playAudio(audio);
     }
@@ -819,7 +766,7 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
           src={post.media}
           playsInline
           muted={!videoHasAudio}
-          preload="none"
+          preload={preload || active ? "auto" : "none"}
           onPlay={handlePlay}
           onPause={handlePause}
           onTimeUpdate={handleTimeUpdate}
@@ -853,7 +800,8 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
       {post.audioUrl && hasAudio && (
         <audio
           ref={audioRef}
-          preload="none"
+          src={post.audioUrl}
+          preload={active || preload ? "auto" : "none"}
           muted
           onError={() => setHasAudio(false)}
         />
@@ -952,8 +900,6 @@ function Slide({ post, active, volume, setVolume, headersJson }: SlideProps) {
     </section>
   );
 }
-
-/* ─── App ────────────────────────────────────────────────────── */
 
 type Filter = "all" | "image" | "gif" | "video";
 
@@ -1377,6 +1323,7 @@ export default function App() {
               key={p.id}
               post={p}
               active={i === idx}
+              preload={i > idx && i <= idx + 5}
               volume={volume}
               setVolume={setVolume}
               headersJson={headersJson ?? ""}
