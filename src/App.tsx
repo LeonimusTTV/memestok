@@ -46,7 +46,7 @@ interface MemePost {
 
 /* ─── Constants ──────────────────────────────────────────────── */
 
-const SUBREDDITS = [
+const DEFAULT_SUBREDDITS = [
   "dankmemes",
   "funny",
   "memes",
@@ -59,6 +59,7 @@ const SUBREDDITS = [
 ];
 
 const HEADERS_KEY = "reddit_headers";
+const SUBS_KEY = "memestok_subs";
 
 /* ─── Helpers ────────────────────────────────────────────────── */
 
@@ -221,6 +222,21 @@ const Ico = {
       <circle cx="7.5" cy="15.5" r="5.5" />
       <path d="M21 2l-9.6 9.6" />
       <path d="M15.5 7.5l3 3" />
+    </svg>
+  ),
+  plus: (p: SvgProps) => (
+    <svg viewBox="0 0 24 24" {...p}>
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  ),
+  subs: (p: SvgProps) => (
+    <svg viewBox="0 0 24 24" {...p}>
+      <line x1="4" y1="6" x2="20" y2="6" />
+      <line x1="4" y1="12" x2="14" y2="12" />
+      <line x1="4" y1="18" x2="17" y2="18" />
+      <circle cx="20" cy="18" r="2" />
+      <line x1="22" y1="16" x2="20" y2="18" />
     </svg>
   ),
 };
@@ -422,6 +438,144 @@ function SetupScreen({ onSave, isExpired }: SetupScreenProps) {
           Headers are stored only in your local app data and sent only to
           Reddit.
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Subreddit Manager ─────────────────────────────────────── */
+
+interface SubredditManagerProps {
+  subreddits: string[];
+  onSave: (newSubs: string[]) => void;
+  onClose: () => void;
+}
+
+function SubredditManager({
+  subreddits,
+  onSave,
+  onClose,
+}: SubredditManagerProps) {
+  const [list, setList] = useState<string[]>(subreddits);
+  const [input, setInput] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const handleAdd = () => {
+    const val = input
+      .trim()
+      .replace(/^\/?(r\/)?/, "")
+      .replace(/\s+/g, "");
+    if (!val) return;
+    if (list.some((s) => s.toLowerCase() === val.toLowerCase())) {
+      setError("Already in your list");
+      return;
+    }
+    setList((prev) => [...prev, val]);
+    setInput("");
+    setError(null);
+  };
+
+  const handleRemove = (sub: string) => {
+    setList((prev) => prev.filter((s) => s !== sub));
+    setError(null);
+  };
+
+  const handleSave = () => {
+    if (list.length === 0) {
+      setError("Add at least one subreddit");
+      return;
+    }
+    localStorage.setItem(SUBS_KEY, JSON.stringify(list));
+    onSave(list);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") handleAdd();
+  };
+
+  return (
+    <div className="subMgrScreen">
+      <div className="subMgrCard">
+        <div className="subMgrHeader">
+          <div className="subMgrTitle">Manage Subreddits</div>
+          <button
+            className="ico subMgrClose"
+            onClick={onClose}
+            aria-label="close"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="subMgrSub">
+          Add or remove subreddits. Changes reload your feed.
+        </div>
+
+        <div className="subList">
+          {list.map((sub) => (
+            <div key={sub} className="subChip">
+              <span>r/{sub}</span>
+              <button
+                className="subChipRemove"
+                onClick={() => handleRemove(sub)}
+                aria-label={`remove r/${sub}`}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          {list.length === 0 && (
+            <div className="subListEmpty">No subreddits — add some below.</div>
+          )}
+        </div>
+
+        {error && <div className="subMgrError">{error}</div>}
+
+        <div className="subAddRow">
+          <input
+            className="subAddInput"
+            placeholder="subreddit name…"
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={handleKeyDown}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <button
+            className="subAddBtn ico"
+            onClick={handleAdd}
+            aria-label="add subreddit"
+          >
+            <Ico.plus
+              width="18"
+              height="18"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+            />
+          </button>
+        </div>
+
+        <button
+          className="subMgrReset"
+          onClick={() => {
+            setList(DEFAULT_SUBREDDITS);
+            setError(null);
+          }}
+        >
+          Reset to defaults
+        </button>
+
+        <button
+          className="setupBtn"
+          onClick={handleSave}
+          disabled={list.length === 0}
+        >
+          Save &amp; Reload Feed
+        </button>
       </div>
     </div>
   );
@@ -822,6 +976,17 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(
     () => !localStorage.getItem(HEADERS_KEY),
   );
+  const [subreddits, setSubreddits] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(SUBS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as string[];
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return DEFAULT_SUBREDDITS;
+  });
+  const [showSubMgr, setShowSubMgr] = useState(false);
 
   const [allPosts, setAllPosts] = useState<MemePost[]>([]);
   const [loading, setLoading] = useState(false);
@@ -844,95 +1009,107 @@ export default function App() {
     localStorage.setItem("memestok_vol", String(volume));
   }, [volume]);
 
-  const loadPosts = useCallback((activeHeadersJson: string) => {
-    afterMapRef.current = {};
-    startTransition(() => {
-      setLoading(true);
-      setError(null);
-      setAllPosts([]);
-      setHasMore(true);
-    });
-    Promise.allSettled(
-      SUBREDDITS.map((sub) => fetchSubreddit(sub, activeHeadersJson)),
-    ).then((results) => {
-      const newAfterMap: Record<string, string | null> = {};
-      const fulfilled: MemePost[][] = [];
-      const rejected: PromiseRejectedResult[] = [];
-      results.forEach((r, i) => {
-        const sub = SUBREDDITS[i];
-        if (r.status === "fulfilled") {
-          newAfterMap[sub] = r.value.after;
-          fulfilled.push(r.value.posts);
-        } else {
-          rejected.push(r as PromiseRejectedResult);
-        }
+  const loadPosts = useCallback(
+    (activeHeadersJson: string, activeSubs: string[]) => {
+      afterMapRef.current = {};
+      startTransition(() => {
+        setLoading(true);
+        setError(null);
+        setAllPosts([]);
+        setHasMore(true);
       });
-      afterMapRef.current = newAfterMap;
-      if (fulfilled.length === 0) {
-        const reason = String(rejected[0]?.reason ?? "Unknown error");
-        if (
-          reason.includes("403") ||
-          reason.includes("401") ||
-          reason.includes("non-JSON")
-        ) {
-          setCookieExpired(true);
-          setShowSetup(true);
-          setLoading(false);
-        } else {
-          setError(reason);
-          setLoading(false);
-        }
-      } else {
-        setCookieExpired(false);
-        setAllPosts(shuffle(interleave(fulfilled)));
-        setHasMore(SUBREDDITS.some((sub) => !!afterMapRef.current[sub]));
-        setLoading(false);
-      }
-    });
-  }, []);
-
-  const loadMore = useCallback((activeHeadersJson: string) => {
-    setLoadingMore(true);
-    Promise.allSettled(
-      SUBREDDITS.map((sub) => {
-        const after = afterMapRef.current[sub];
-        if (!after)
-          return Promise.resolve({ posts: [] as MemePost[], after: null });
-        return fetchSubreddit(sub, activeHeadersJson, after);
-      }),
-    ).then((results) => {
-      const newAfterMap = { ...afterMapRef.current };
-      const arrays: MemePost[][] = [];
-      results.forEach((r, i) => {
-        const sub = SUBREDDITS[i];
-        if (r.status === "fulfilled" && r.value.posts.length > 0) {
-          newAfterMap[sub] = r.value.after;
-          arrays.push(r.value.posts);
-        }
-      });
-      afterMapRef.current = newAfterMap;
-      const newPosts = shuffle(interleave(arrays));
-      if (newPosts.length > 0) {
-        setAllPosts((prev) => {
-          const seen = new Set(prev.map((p) => p.id));
-          return [...prev, ...newPosts.filter((p) => !seen.has(p.id))];
+      Promise.allSettled(
+        activeSubs.map((sub) => fetchSubreddit(sub, activeHeadersJson)),
+      ).then((results) => {
+        const newAfterMap: Record<string, string | null> = {};
+        const fulfilled: MemePost[][] = [];
+        const rejected: PromiseRejectedResult[] = [];
+        results.forEach((r, i) => {
+          const sub = activeSubs[i];
+          if (r.status === "fulfilled") {
+            newAfterMap[sub] = r.value.after;
+            fulfilled.push(r.value.posts);
+          } else {
+            rejected.push(r as PromiseRejectedResult);
+          }
         });
-      }
-      setHasMore(SUBREDDITS.some((sub) => !!afterMapRef.current[sub]));
-      setLoadingMore(false);
-    });
-  }, []);
+        afterMapRef.current = newAfterMap;
+        if (fulfilled.length === 0) {
+          const reason = String(rejected[0]?.reason ?? "Unknown error");
+          if (
+            reason.includes("403") ||
+            reason.includes("401") ||
+            reason.includes("non-JSON")
+          ) {
+            setCookieExpired(true);
+            setShowSetup(true);
+            setLoading(false);
+          } else {
+            setError(reason);
+            setLoading(false);
+          }
+        } else {
+          setCookieExpired(false);
+          setAllPosts(shuffle(interleave(fulfilled)));
+          setHasMore(activeSubs.some((sub) => !!afterMapRef.current[sub]));
+          setLoading(false);
+        }
+      });
+    },
+    [],
+  );
+
+  const loadMore = useCallback(
+    (activeHeadersJson: string, activeSubs: string[]) => {
+      setLoadingMore(true);
+      Promise.allSettled(
+        activeSubs.map((sub) => {
+          const after = afterMapRef.current[sub];
+          if (!after)
+            return Promise.resolve({ posts: [] as MemePost[], after: null });
+          return fetchSubreddit(sub, activeHeadersJson, after);
+        }),
+      ).then((results) => {
+        const newAfterMap = { ...afterMapRef.current };
+        const arrays: MemePost[][] = [];
+        results.forEach((r, i) => {
+          const sub = activeSubs[i];
+          if (r.status === "fulfilled" && r.value.posts.length > 0) {
+            newAfterMap[sub] = r.value.after;
+            arrays.push(r.value.posts);
+          }
+        });
+        afterMapRef.current = newAfterMap;
+        const newPosts = shuffle(interleave(arrays));
+        if (newPosts.length > 0) {
+          setAllPosts((prev) => {
+            const seen = new Set(prev.map((p) => p.id));
+            return [...prev, ...newPosts.filter((p) => !seen.has(p.id))];
+          });
+        }
+        setHasMore(activeSubs.some((sub) => !!afterMapRef.current[sub]));
+        setLoadingMore(false);
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!showSetup && headersJson) {
-      loadPosts(headersJson);
+      loadPosts(headersJson, subreddits);
     }
-  }, [showSetup, headersJson, loadPosts]);
+  }, [showSetup, headersJson, loadPosts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleHeadersSave = (newHeadersJson: string) => {
     setHeadersJson(newHeadersJson);
     setShowSetup(false);
     setCookieExpired(false);
+  };
+
+  const handleSubsSave = (newSubs: string[]) => {
+    setSubreddits(newSubs);
+    setShowSubMgr(false);
+    if (headersJson) loadPosts(headersJson, newSubs);
   };
 
   const posts = allPosts.filter((p) => filter === "all" || p.type === filter);
@@ -952,9 +1129,18 @@ export default function App() {
     if (!headersJson || loading || loadingMore || !hasMore) return;
     if (posts.length === 0) return;
     if (posts.length < 8 || idx >= posts.length - 8) {
-      loadMore(headersJson);
+      loadMore(headersJson, subreddits);
     }
-  }, [idx, posts.length, headersJson, loading, loadingMore, hasMore, loadMore]);
+  }, [
+    idx,
+    posts.length,
+    headersJson,
+    loading,
+    loadingMore,
+    hasMore,
+    loadMore,
+    subreddits,
+  ]);
 
   const onScroll = useCallback(() => {
     const el = scroller.current;
@@ -1012,6 +1198,16 @@ export default function App() {
     return <SetupScreen onSave={handleHeadersSave} isExpired={cookieExpired} />;
   }
 
+  if (showSubMgr) {
+    return (
+      <SubredditManager
+        subreddits={subreddits}
+        onSave={handleSubsSave}
+        onClose={() => setShowSubMgr(false)}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <div className="stage">
@@ -1052,7 +1248,7 @@ export default function App() {
           <button
             className="setupBtn"
             style={{ marginTop: 16, maxWidth: 240 }}
-            onClick={() => headersJson && loadPosts(headersJson)}
+            onClick={() => headersJson && loadPosts(headersJson, subreddits)}
           >
             Retry
           </button>
@@ -1090,7 +1286,7 @@ export default function App() {
             </div>
             <button
               className="ico eyeBtn"
-              onClick={() => headersJson && loadPosts(headersJson)}
+              onClick={() => headersJson && loadPosts(headersJson, subreddits)}
               aria-label="refresh"
               title="Refresh feed"
               style={{ opacity: 0.55 }}
@@ -1103,6 +1299,21 @@ export default function App() {
                 strokeWidth="2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
+              />
+            </button>
+            <button
+              className="ico eyeBtn"
+              onClick={() => setShowSubMgr(true)}
+              aria-label="manage subreddits"
+              title="Manage subreddits"
+            >
+              <Ico.subs
+                width="20"
+                height="20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
               />
             </button>
             <button

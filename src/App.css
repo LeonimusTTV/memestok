@@ -644,3 +644,172 @@ body {
   color: rgba(255, 255, 255, .3);
   text-align: center;
 }
+
+/* ─── Subreddit Manager ────────────────────────────────────────── */
+.subMgrScreen {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 100;
+  backdrop-filter: blur(6px);
+}
+
+.subMgrCard {
+  background: #111;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 16px;
+  padding: 22px 20px;
+  max-width: 400px;
+  width: 100%;
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, .12) transparent;
+}
+
+.subMgrHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.subMgrTitle {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -.02em;
+}
+
+.subMgrClose {
+  font-size: 16px;
+  color: rgba(255, 255, 255, .5);
+  padding: 4px 8px;
+  filter: none;
+}
+
+.subMgrClose:hover {
+  color: #fff;
+}
+
+.subMgrSub {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, .45);
+  margin-bottom: 16px;
+  line-height: 1.4;
+}
+
+.subList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+  min-height: 40px;
+}
+
+.subChip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 86, 28, .15);
+  border: 1px solid rgba(255, 138, 92, .3);
+  border-radius: 999px;
+  padding: 5px 8px 5px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #ff8a5c;
+  white-space: nowrap;
+}
+
+.subChipRemove {
+  background: none;
+  border: none;
+  color: rgba(255, 138, 92, .6);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color .1s;
+}
+
+.subChipRemove:hover {
+  color: #ff8a5c;
+}
+
+.subListEmpty {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, .3);
+  font-style: italic;
+  padding: 6px 0;
+}
+
+.subMgrError {
+  background: rgba(255, 138, 92, .1);
+  border: 1px solid rgba(255, 138, 92, .3);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #ff8a5c;
+  margin-bottom: 12px;
+}
+
+.subAddRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.subAddInput {
+  flex: 1;
+  background: rgba(255, 255, 255, .06);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+
+.subAddInput::placeholder {
+  color: rgba(255, 255, 255, .3);
+}
+
+.subAddInput:focus {
+  border-color: rgba(255, 138, 92, .55);
+}
+
+.subAddBtn {
+  background: rgba(255, 138, 92, .18);
+  border: 1px solid rgba(255, 138, 92, .35);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #ff8a5c;
+  flex-shrink: 0;
+  filter: none;
+  transition: background .12s;
+}
+
+.subAddBtn:hover {
+  background: rgba(255, 138, 92, .28);
+}
+
+.subMgrReset {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, .35);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 14px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  display: block;
+  transition: color .12s;
+}
+
+.subMgrReset:hover {
+  color: rgba(255, 255, 255, .7);
+}
