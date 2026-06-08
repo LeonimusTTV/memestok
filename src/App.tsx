@@ -250,6 +250,7 @@ function parseHeadersFromPaste(text: string): Record<string, string> | null {
 
   // ── "Copy as cURL (bash)" ─────────────────────────────────────────────────
   // Format: -H 'key: value' or -H "key: value"
+  // macOS Chrome also emits -b 'cookie-string' instead of -H 'cookie: ...'
   const headers: Record<string, string> = {};
   const re = /-H\s+(?:'([^']+)'|"([^"]+)")/g;
   let m: RegExpExecArray | null;
@@ -258,6 +259,12 @@ function parseHeadersFromPaste(text: string): Record<string, string> | null {
     const ci = raw.indexOf(":");
     if (ci === -1) continue;
     headers[raw.slice(0, ci).trim().toLowerCase()] = raw.slice(ci + 1).trim();
+  }
+  // Parse -b / --cookie flag (used by macOS Chrome's "Copy as cURL")
+  const cookieFlag = /-b\s+(?:'([^']*)'|"([^"]*)")/;
+  const cm = t.match(cookieFlag);
+  if (cm && !headers.cookie) {
+    headers.cookie = cm[1] ?? cm[2];
   }
   if (headers.cookie) return headers;
 
