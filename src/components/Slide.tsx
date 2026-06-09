@@ -1,7 +1,21 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
+import Hls from "hls.js";
 import type { MemePost } from "../types";
 import { Ico } from "./Ico";
 import { Rail } from "./Rail";
+
+// Whether hls.js can be used (MSE-based). Takes priority over native HLS
+// because WebView2 (Windows, Chromium 107+) reports canPlayType > "" for
+// HLS but its native CMAF-HLS implementation only fetches audio and drops
+// video. Always use hls.js when MSE is available.
+const HLSJS_SUPPORTED = Hls.isSupported();
+// Fallback for platforms where MSE is absent but native HLS works (WebKit/macOS).
+const NATIVE_HLS =
+  !HLSJS_SUPPORTED &&
+  (() => {
+    const v = document.createElement("video");
+    return v.canPlayType("application/vnd.apple.mpegurl") !== "";
+  })();
 
 export interface SlideProps {
   post: MemePost;
@@ -20,116 +34,157 @@ export function Slide({
   setVolume,
 }: SlideProps) {
   const isVideo = post.type === "video";
-
-  const videoHasAudio = isVideo && !post.audioUrl;
+  // HLS stream carries audio — all video posts with HLS have in-stream audio.
+  const isHls = isVideo && post.media.includes(".m3u8");
+  // Use hls.js when MSE is available (Windows/Chromium). On macOS/WebKit,
+  // MSE is absent so we fall back to the native src path.
+  const useHlsJs = isHls && HLSJS_SUPPORTED;
   const muted = volume === 0;
   const [paused, setPaused] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
   const [prog, setProg] = useState(0);
-  const [hasAudio, setHasAudio] = useState(!!post.audioUrl);
   const [showVol, setShowVol] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
   const userPausedRef = useRef(false);
   // Last non-zero volume, used to restore when the mute icon is clicked.
   const prevVolRef = useRef(volume > 0 ? volume : 1);
+  // Keep a ref to the current muted state so the play effect can read it
+  // without having it as a dependency (which would re-trigger play() on every
+  // volume change and cause AbortError + permanent silence).
+  const mutedRef = useRef(muted);
+  // Keep a ref to active so hls.js event handlers can read it without
+  // closing over stale values.
+  const activeRef = useRef(active);
+  // Set once hls.js MANIFEST_PARSED fires; gates whether play() can be called
+  // directly vs waiting for the event.
+  const manifestReadyRef = useRef(false);
+  useEffect(() => {
+    mutedRef.current = muted;
+  }, [muted]);
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
   useEffect(() => {
     if (volume > 0) prevVolRef.current = volume;
   }, [volume]);
+  // Track the in-flight video play() promise so we can await it before
+  // calling pause(), preventing the AbortError race condition.
+  const videoPlayPromiseRef = useRef<Promise<void> | undefined>();
   // Close the volume panel when this slide scrolls out of view.
   useEffect(() => {
     if (!active) setShowVol(false);
   }, [active]);
 
-  // Play audio imperatively — avoids the React state→render→effect timing race.
-  const playAudio = useCallback(
-    (audio: HTMLAudioElement) => {
-      audio.muted = true; // satisfy autoplay policy, then restore
-      audio.volume = volume > 0 ? volume : 1;
-      audio
-        .play()
-        .then(() => {
-          audio.muted = volume === 0;
-        })
-        .catch((e) => console.error("[audio play]", e));
+  // Destroy hls instance when the post changes or the component unmounts.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(
+    () => () => {
+      hlsRef.current?.destroy();
+      hlsRef.current = null;
+      manifestReadyRef.current = false;
     },
-    [volume],
+    [post.media],
   );
 
-  useEffect(() => {
-    if (!isVideo || active) return;
-    const video = videoRef.current;
-    if (!video) return;
-    if (preload) {
-      video.load();
-      audioRef.current?.load();
-    }
-  }, [preload, isVideo, active]);
-
+  // Single unified playback effect — handles both activation and hls setup.
+  // The hls instance is created lazily on first activation so that inactive
+  // slides never load data, and there is no race between a setup effect and a
+  // play effect calling stopLoad().
   useEffect(() => {
     if (!isVideo) return;
-    const video = videoRef.current;
-    const audio = audioRef.current;
+    const video = videoRef.current!;
+
+    const startPlay = () => {
+      video.muted = true;
+      const p = video.play();
+      videoPlayPromiseRef.current = p;
+      p?.then(() => {
+        videoPlayPromiseRef.current = undefined;
+        video.muted = mutedRef.current;
+      }).catch((e) => {
+        console.error("[video play]", e);
+        videoPlayPromiseRef.current = undefined;
+      });
+    };
+
     if (active) {
       userPausedRef.current = false;
       setBuffering(true);
-      if (videoHasAudio) {
-        // HLS: audio is in the video stream — use the same muted-autoplay trick.
-        video!.muted = true;
-        video!
-          .play()
-          .then(() => {
-            video!.muted = muted;
-          })
-          .catch((e) => console.error("[video play]", e));
-      } else {
-        video?.play().catch(() => {});
-        // Audio src is set directly in JSX (hls_url) — play it here.
-        if (audio && hasAudio) {
-          audio.muted = true;
-          audio
-            .play()
-            .then(() => {
-              audio.muted = muted;
-            })
-            .catch(() => {});
-        }
+
+      if (!useHlsJs) {
+        // Plain MP4 or native HLS (macOS/WebKit): play via <video src>.
+        startPlay();
+        return;
       }
+
+      if (hlsRef.current && manifestReadyRef.current) {
+        // Slide was seen before — manifest already parsed, resume segments.
+        hlsRef.current.startLoad(-1);
+        startPlay();
+        return;
+      }
+
+      // First activation: lazily create the hls.js instance.
+      // autoStartLoad:false so segments never load until startLoad() is called,
+      // preventing inactive slides from consuming bandwidth.
+      hlsRef.current?.destroy();
+      manifestReadyRef.current = false;
+      const hls = new Hls({ autoStartLoad: false });
+      hlsRef.current = hls;
+      hls.loadSource(post.media); // fetches the manifest only
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        manifestReadyRef.current = true;
+        if (!activeRef.current) return; // deactivated before manifest arrived
+        hls.startLoad(-1);
+        startPlay();
+      });
+
+      hls.on(
+        Hls.Events.ERROR,
+        (
+          _e: unknown,
+          data: { fatal: boolean; type: string; details: string },
+        ) => {
+          console.error("[hls]", data.type, data.details, "fatal:", data.fatal);
+        },
+      );
     } else {
       setBuffering(false);
-      video?.pause();
-      if (video) video.currentTime = 0;
-      audio?.pause();
-      if (audio) audio.currentTime = 0;
+      hlsRef.current?.stopLoad();
+      const doStop = () => {
+        video.pause();
+        video.currentTime = 0;
+      };
+      if (videoPlayPromiseRef.current) {
+        videoPlayPromiseRef.current.then(doStop, doStop);
+        videoPlayPromiseRef.current = undefined;
+      } else {
+        doStop();
+      }
     }
-  }, [active, isVideo, videoHasAudio, muted, hasAudio]);
+  }, [active, isVideo, useHlsJs, post.media]);
 
-  // Sync volume/muted to both video (HLS) and audio (fallback) elements.
+  // Sync volume/muted to the video element.
   useEffect(() => {
+    if (!isVideo || !videoRef.current) return;
     const isMuted = volume === 0;
-    if (videoHasAudio && videoRef.current) {
-      videoRef.current.muted = isMuted;
-      if (!isMuted) videoRef.current.volume = volume;
-    }
-    if (audioRef.current) {
-      audioRef.current.muted = isMuted;
-      if (!isMuted) audioRef.current.volume = volume;
-    }
-  }, [volume, videoHasAudio]);
+    videoRef.current.muted = isMuted;
+    if (!isMuted) videoRef.current.volume = volume;
+  }, [volume, isVideo]);
 
   const handleClick = () => {
     if (!isVideo) return;
     const video = videoRef.current;
-    const audio = audioRef.current;
     if (video?.paused) {
       userPausedRef.current = false;
       video.play().catch(() => {});
-      if (audio && hasAudio) playAudio(audio);
     } else {
       userPausedRef.current = true;
       video?.pause();
-      audio?.pause();
     }
   };
 
@@ -140,29 +195,16 @@ export function Slide({
 
   const handleEnded = () => {
     const video = videoRef.current;
-    const audio = audioRef.current;
     if (video) {
       video.currentTime = 0;
       video.play().catch(() => {});
-    }
-    if (audio && hasAudio) {
-      audio.currentTime = 0;
-      playAudio(audio);
     }
   };
 
   const handleTimeUpdate = () => {
     const video = videoRef.current;
-    const audio = audioRef.current;
     if (!video || !video.duration) return;
     setProg(video.currentTime / video.duration);
-    if (
-      audio &&
-      hasAudio &&
-      Math.abs(video.currentTime - audio.currentTime) > 0.3
-    ) {
-      audio.currentTime = video.currentTime;
-    }
   };
 
   const bgUrl = post.bg || post.media;
@@ -175,10 +217,10 @@ export function Slide({
         <video
           ref={videoRef}
           className="media contain"
-          src={post.media}
+          src={useHlsJs ? undefined : post.media}
           playsInline
-          muted={!videoHasAudio}
-          preload={preload || active ? "auto" : "none"}
+          muted
+          preload={useHlsJs ? "none" : preload || active ? "auto" : "none"}
           onPlay={handlePlay}
           onPause={handlePause}
           onTimeUpdate={handleTimeUpdate}
@@ -207,16 +249,6 @@ export function Slide({
         <div className="mediaSpinner">
           <div className="spinner" />
         </div>
-      )}
-
-      {post.audioUrl && hasAudio && (
-        <audio
-          ref={audioRef}
-          src={post.audioUrl}
-          preload={active || preload ? "auto" : "none"}
-          muted
-          onError={() => setHasAudio(false)}
-        />
       )}
 
       {post.type !== "image" && (

@@ -20,6 +20,15 @@ export function parsePost(raw: RedditPost): MemePost | null {
     const rv = raw.media.reddit_video;
     const bg = raw.preview?.images?.[0]?.source?.url ?? "";
 
+    // Prefer the HLS URL as the video source: it contains both audio and video
+    // in a single adaptive stream. Falls back to DASH-only (no audio) when HLS
+    // is unavailable. hls.js handles playback on Chromium (Windows/WebView2);
+    // WebKit (macOS) plays HLS natively.
+    const media =
+      !rv.is_gif && rv.has_audio !== false && rv.hls_url
+        ? rv.hls_url
+        : rv.fallback_url;
+
     return {
       id: raw.id,
       sub: raw.subreddit,
@@ -27,12 +36,8 @@ export function parsePost(raw: RedditPost): MemePost | null {
       author: `u/${raw.author}`,
       up: raw.ups,
       type: "video",
-      media: rv.fallback_url,
+      media,
       bg,
-      audioUrl:
-        !rv.is_gif && rv.has_audio !== false && rv.hls_url
-          ? rv.hls_url
-          : undefined,
       t: relTime(raw.created_utc),
     };
   }
