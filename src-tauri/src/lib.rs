@@ -30,7 +30,7 @@ async fn fetch_media(url: String, headers_json: String) -> Result<String, String
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
-        .headers(header_map)
+        //.headers(header_map)
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
