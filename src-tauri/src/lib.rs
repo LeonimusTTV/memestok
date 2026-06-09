@@ -1,42 +1,59 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use base64::Engine as _;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use std::str::FromStr;
 
-/// Fetch a subreddit JSON feed by spawning bun with the user's exact browser
-/// headers (extracted from a "Copy as fetch" paste).  We pass the headers as
-/// a JSON env-var — bun spreads them directly into fetch(), so the request is
-/// indistinguishable from a real browser navigation.
+/// Build a reqwest HeaderMap from a JSON object of header key/value strings.
+/// Invalid header names or values are silently skipped.
+fn build_header_map(headers_json: &str) -> Result<HeaderMap, String> {
+    let headers: std::collections::HashMap<String, String> =
+        serde_json::from_str(headers_json).map_err(|e| format!("Failed to parse headers: {}", e))?;
+
+    let mut header_map = HeaderMap::new();
+    for (key, value) in &headers {
+        let Ok(name) = HeaderName::from_str(key) else {
+            continue;
+        };
+        let Ok(val) = HeaderValue::from_str(value) else {
+            continue;
+        };
+        header_map.insert(name, val);
+    }
+    Ok(header_map)
+}
+
+/// Fetch a media URL with the user's exact browser headers.
+/// Returns the response body as a base64-encoded string.
 #[tauri::command]
 async fn fetch_media(url: String, headers_json: String) -> Result<String, String> {
-    let script = r#"
-const headers = JSON.parse(process.env.MEDIA_HEADERS);
-const r = await fetch(process.env.MEDIA_URL, { headers });
-if (!r.ok) {
-  process.stderr.write("HTTP " + r.status + "\n");
-  process.exit(1);
-}
-const buf = await r.arrayBuffer();
-process.stdout.write(Buffer.from(buf).toString('base64'));
-"#;
+    let header_map = build_header_map(&headers_json)?;
 
-    let output = tokio::process::Command::new("bun")
-        .arg("-e")
-        .arg(script)
-        .env("MEDIA_URL", &url)
-        .env("MEDIA_HEADERS", &headers_json)
-        .env("NO_COLOR", "1")
-        .output()
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .headers(header_map)
+        .send()
         .await
-        .map_err(|e| format!("Failed to spawn bun: {}", e))?;
+        .map_err(|e| format!("Request failed: {}", e))?;
 
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(err.trim().to_string());
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status().as_u16()));
     }
 
-    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
+/// Fetch a subreddit JSON feed with the user's exact browser headers.
 #[tauri::command]
-async fn fetch_reddit(subreddit: String, headers_json: String, after: String) -> Result<String, String> {
+async fn fetch_reddit(
+    subreddit: String,
+    headers_json: String,
+    after: String,
+) -> Result<String, String> {
     let mut url = format!(
         "https://www.reddit.com/r/{}.json?limit=25&raw_json=1",
         subreddit
@@ -45,36 +62,28 @@ async fn fetch_reddit(subreddit: String, headers_json: String, after: String) ->
         url.push_str(&format!("&after={}", after));
     }
 
-    // The script receives the full headers object from the env so it uses the
-    // user's exact browser fingerprint — no hardcoded headers needed.
-    let script = r#"
-const headers = JSON.parse(process.env.REDDIT_HEADERS);
-const r = await fetch(process.env.REDDIT_URL, { headers });
-if (!r.ok) {
-  const body = await r.text();
-  process.stderr.write("HTTP " + r.status + "\n" + body.slice(0, 800) + "\n");
-  process.exit(1);
-}
-process.stdout.write(await r.text());
-"#;
+    let header_map = build_header_map(&headers_json)?;
 
-    let output = tokio::process::Command::new("bun")
-        .arg("-e")
-        .arg(script)
-        .env("REDDIT_URL", &url)
-        .env("REDDIT_HEADERS", &headers_json)
-        .env("NO_COLOR", "1")
-        .output()
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .headers(header_map)
+        .send()
         .await
-        .map_err(|e| format!("Failed to spawn bun: {}", e))?;
+        .map_err(|e| format!("Request failed: {}", e))?;
 
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).to_string();
-        eprintln!("[fetch_reddit] {} bun error: {}", subreddit, err);
-        return Err(err.trim().to_string());
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(800).collect();
+        eprintln!("[fetch_reddit] {} HTTP {}: {}", subreddit, status, preview);
+        return Err(format!("HTTP {}", status.as_u16()));
     }
 
-    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
