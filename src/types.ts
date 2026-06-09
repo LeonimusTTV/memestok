@@ -28,7 +28,6 @@ export interface MemePost {
   type: "image" | "gif" | "video";
   media: string;
   bg: string;
-  audioUrl?: string;
   t: string;
 }
 

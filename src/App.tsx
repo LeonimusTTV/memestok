@@ -435,7 +435,6 @@ export default function App() {
               preload={i > idx && i <= idx + 5}
               volume={volume}
               setVolume={setVolume}
-              headersJson={headersJson ?? ""}
             />
           ))}
         </div>

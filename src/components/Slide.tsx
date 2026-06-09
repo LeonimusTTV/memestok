@@ -9,13 +9,6 @@ import { Rail } from "./Rail";
 // HLS but its native CMAF-HLS implementation only fetches audio and drops
 // video. Always use hls.js when MSE is available.
 const HLSJS_SUPPORTED = Hls.isSupported();
-// Fallback for platforms where MSE is absent but native HLS works (WebKit/macOS).
-const NATIVE_HLS =
-  !HLSJS_SUPPORTED &&
-  (() => {
-    const v = document.createElement("video");
-    return v.canPlayType("application/vnd.apple.mpegurl") !== "";
-  })();
 
 export interface SlideProps {
   post: MemePost;
@@ -23,7 +16,6 @@ export interface SlideProps {
   preload?: boolean;
   volume: number;
   setVolume: (v: number) => void;
-  headersJson: string;
 }
 
 export function Slide({
