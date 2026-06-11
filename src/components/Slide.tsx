@@ -63,7 +63,7 @@ export function Slide({
   }, [volume]);
   // Track the in-flight video play() promise so we can await it before
   // calling pause(), preventing the AbortError race condition.
-  const videoPlayPromiseRef = useRef<Promise<void> | undefined>();
+  const videoPlayPromiseRef = useRef<Promise<void> | undefined>(undefined);
   // Close the volume panel when this slide scrolls out of view.
   useEffect(() => {
     if (!active) setShowVol(false);
