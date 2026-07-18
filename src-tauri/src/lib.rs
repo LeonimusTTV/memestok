@@ -47,6 +47,8 @@ async fn fetch_media(url: String, headers_json: String) -> Result<String, String
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
+const ALLOWED_HEADERS: &[&str] = &["user-agent", "cookie", "accept-language"];
+
 /// Fetch a subreddit JSON feed with the user's exact browser headers.
 #[tauri::command]
 async fn fetch_reddit(
@@ -62,9 +64,23 @@ async fn fetch_reddit(
         url.push_str(&format!("&after={}", after));
     }
 
-    let header_map = build_header_map(&headers_json)?;
+    let full_map = build_header_map(&headers_json)?;
 
-    let client = reqwest::Client::new();
+    // Only forward headers that are safe/relevant for the JSON API endpoint.
+    let mut header_map = HeaderMap::new();
+    for name in ALLOWED_HEADERS {
+        if let Some(val) = full_map.get(*name) {
+            if let Ok(header_name) = HeaderName::from_str(name) {
+                header_map.insert(header_name, val.clone());
+            }
+        }
+    }
+
+    let client = reqwest::ClientBuilder::new()
+        .user_agent("") // prevent reqwest from adding its own User-Agent
+        .build()
+        .map_err(|e| format!("Failed to build client: {}", e))?;
+
     let response = client
         .get(&url)
         .headers(header_map)
